@@ -220,7 +220,7 @@ fn run(args: &[String]) -> Result<(), String> {
                     return Err("mcp: --author applies to the headless server; with --connect, run file.setAuthor".into());
                 }
                 Some(addr) => {
-                    let remote = wordcraft_mcp::Remote::connect(&addr).map_err(|e| format!("can't reach the WordCraft app at {addr}: {e}"))?;
+                    let remote = wordcraft_mcp::Remote::connect(&addr).map_err(|e| format!("can't reach the Atelier Scribe app at {addr}: {e}"))?;
                     if let Some(w) = remote.key_warning() {
                         eprintln!("wordcraft-cli: {w}");
                     }

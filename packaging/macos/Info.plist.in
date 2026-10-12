@@ -7,9 +7,9 @@
   <key>CFBundleDevelopmentRegion</key>
   <string>en</string>
   <key>CFBundleDisplayName</key>
-  <string>WordCraft</string>
+  <string>Atelier Scribe</string>
   <key>CFBundleName</key>
-  <string>WordCraft</string>
+  <string>Atelier Scribe</string>
   <key>CFBundleExecutable</key>
   <string>WordCraft</string>
   <key>CFBundleIdentifier</key>
@@ -43,7 +43,7 @@
   <key>NSRequiresAquaSystemAppearance</key>
   <false/>
   <key>NSHumanReadableCopyright</key>
-  <string>Copyright © the WordCraft authors. MIT OR Apache-2.0.</string>
+  <string>Copyright © Aetherion Nation and the WordCraft authors. MIT OR Apache-2.0.</string>
 
   <!-- Documents WordCraft opens (system type declarations). -->
   <key>CFBundleDocumentTypes</key>
