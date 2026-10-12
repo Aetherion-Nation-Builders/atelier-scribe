@@ -72,6 +72,8 @@ impl LangInfo {
     fn catalog(&self) -> &Catalog {
         self.catalog.get_or_init(|| {
             let (catalog, errors) = Catalog::parse(self.source);
+            // Our own strings (`identity::strings`), beside the upstream catalog.
+            let catalog = catalog.with_plain(crate::identity::strings(self.code));
             for error in errors {
                 log::warn!("{} interface catalog: {error}; that entry shows in English", self.code);
             }
@@ -218,7 +220,18 @@ pub fn current() -> Lang {
 
 /// Does `lang` have a catalog entry for this string? (English never does: it is the source.)
 pub fn has(lang: Lang, s: &str) -> bool {
-    lang.catalog().plain(s).is_some()
+    plain(lang, s).is_some()
+}
+
+/// The catalog entry for `s`. Messages from below the UI crate (engine errors and the like) still
+/// name the upstream product, while the catalogs are keyed by the rewritten text (`identity`), so
+/// such a message is looked up under its rewritten form too.
+fn plain(lang: Lang, s: &str) -> Option<&'static str> {
+    let catalog = lang.catalog();
+    catalog.plain(s).or_else(|| match crate::identity::rewrite_cow(s) {
+        std::borrow::Cow::Owned(rewritten) => catalog.plain(&rewritten),
+        std::borrow::Cow::Borrowed(_) => None,
+    })
 }
 
 /// `s` in the current language ([`tr`] with [`current`]).
@@ -228,7 +241,7 @@ pub fn t(s: &str) -> &str {
 
 /// `s` in `lang`; strings without a translation come back unchanged.
 pub fn tr(lang: Lang, s: &str) -> &str {
-    lang.catalog().plain(s).unwrap_or(s)
+    plain(lang, s).unwrap_or(s)
 }
 
 /// A ribbon location (`Home › Font`) in the current language, segment by segment.

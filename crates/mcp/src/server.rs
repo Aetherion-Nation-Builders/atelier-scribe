@@ -133,9 +133,9 @@ impl Server {
                 Ok(json!({
                     "protocolVersion": version,
                     "capabilities": {"tools": {}, "resources": {}},
-                    "serverInfo": {"name": "wordcraft", "title": "WordCraft", "version": env!("CARGO_PKG_VERSION"), "websiteUrl": "https://getartcraft.com/apps/wordcraft"},
+                    "serverInfo": {"name": "wordcraft", "title": "Atelier Scribe", "version": env!("CARGO_PKG_VERSION"), "websiteUrl": "https://www.aetherionnnation.com/atelier/scribe"},
                     "instructions": format!(
-                        "{INSTRUCTIONS} Backend: {}. Community: https://discord.gg/artcraft · https://getartcraft.com/apps/wordcraft · https://github.com/storytold/wordcraft",
+                        "{INSTRUCTIONS} Backend: {}. Links: https://www.aetherionnnation.com (the Nation) · https://www.aetherionnnation.com/atelier/scribe · https://github.com/Aetherion-Nation-Builders/atelier-scribe",
                         self.backend.describe()
                     ),
                 }))

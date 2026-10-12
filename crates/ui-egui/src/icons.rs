@@ -1103,9 +1103,15 @@ pub fn paint(p: &Painter, r: Rect, name: &str, c: Color32, accent: Color32) {
             pen.line_c(&[(11.0, 14.0), (17.0, 14.0)], a);
         }
         "discord" => {
-            pen.fill(&[(3.0, 6.0), (7.0, 3.5), (13.0, 3.5), (17.0, 6.0), (17.5, 14.0), (13.5, 16.5), (6.5, 16.5), (2.5, 14.0)], a);
-            pen.fcircle(7.5, 10.5, 1.5, Color32::WHITE);
-            pen.fcircle(12.5, 10.5, 1.5, Color32::WHITE);
+            // The Nation: the Atelier mark, the hidden sun (a half disc over its horizon bar).
+            let sun: Vec<(f32, f32)> = (0..=12)
+                .map(|i| {
+                    let t = std::f32::consts::PI * (1.0 + i as f32 / 12.0);
+                    (10.0 + 7.5 * t.cos(), 12.0 + 7.5 * t.sin())
+                })
+                .collect();
+            pen.fill(&sun, a);
+            pen.fill(&[(1.5, 13.5), (18.5, 13.5), (18.5, 16.0), (1.5, 16.0)], a);
         }
         "help" => {
             pen.circle(10.0, 10.0, 7.0, c);

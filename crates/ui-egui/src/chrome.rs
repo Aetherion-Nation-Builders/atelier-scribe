@@ -114,7 +114,7 @@ pub fn title_bar(app: &mut WordApp, ui: &mut Ui) {
                         ui.painter().rect_filled(
                             r,
                             11.0,
-                            if resp.hovered() { egui::Color32::from_rgb(0x47, 0x52, 0xC4) } else { egui::Color32::from_rgb(0x58, 0x65, 0xF2) },
+                            if resp.hovered() { egui::Color32::from_rgb(0x7f, 0x57, 0x0f) } else { egui::Color32::from_rgb(0x9a, 0x6a, 0x12) },
                         );
                         icons::paint(
                             ui.painter(),
@@ -123,14 +123,8 @@ pub fn title_bar(app: &mut WordApp, ui: &mut Ui) {
                             egui::Color32::WHITE,
                             egui::Color32::WHITE,
                         );
-                        ui.painter().text(
-                            pos2(r.min.x + 24.0, r.center().y),
-                            Align2::LEFT_CENTER,
-                            tl!("Discord"),
-                            medium(11.5),
-                            egui::Color32::WHITE,
-                        );
-                        if resp.on_hover_text(tl!("Join the ArtCraft community on Discord")).clicked() {
+                        ui.painter().text(pos2(r.min.x + 24.0, r.center().y), Align2::LEFT_CENTER, tl!("Nation"), medium(11.5), egui::Color32::WHITE);
+                        if resp.on_hover_text(tl!("Join the Nation (aetherionnnation.com)")).clicked() {
                             let _ = app.run("ui.discord", json!({}));
                         }
                         ui.add_space(8.0);
