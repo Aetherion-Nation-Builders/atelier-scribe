@@ -23,9 +23,27 @@ pub struct Fragment {
 
 impl Fragment {
     pub fn plain_text(&self) -> String {
+        self.to_document().plain_text(crate::StoryRef::Body)
+    }
+    /// The fragment as the body of a new document (default styles).
+    pub fn to_document(&self) -> Document {
         let mut d = Document::new();
         d.body = self.blocks.iter().cloned().map(Arc::new).collect();
-        d.plain_text(crate::StoryRef::Body)
+        d
+    }
+    /// Whether the fragment holds an equation (in tables too), which a copy also puts on the
+    /// system clipboard as MathML (#816).
+    pub fn has_equation(&self) -> bool {
+        let mut found = false;
+        for b in &self.blocks {
+            each_para(b, 0, &mut |p| found |= p.objects.iter().any(|o| matches!(o, InlineObject::Equation { .. })));
+        }
+        found
+    }
+    /// The text a copy puts on the clipboard: [`Self::plain_text`] with symbol-font characters
+    /// (Wingdings…) as their Unicode equivalents.
+    pub fn clipboard_text(&self) -> String {
+        self.to_document().shown_text(crate::StoryRef::Body)
     }
     pub fn from_text(s: &str) -> Fragment {
         let lines: Vec<&str> = s.split('\n').collect();
@@ -45,41 +63,202 @@ const MAX_BOX_DEPTH: usize = 8;
 /// Most text box stories one paste may create (hostile documents can fan out).
 const MAX_PASTED_BOXES: usize = 4096;
 
-/// Call `f` on every paragraph of a block (tables descended, depth-limited).
-pub(crate) fn each_para<'a>(b: &'a Block, depth: usize, f: &mut dyn FnMut(&'a Paragraph)) {
-    match b {
-        Block::Para(p) => f(p),
-        Block::Table(t) if depth < 16 => {
-            for cell in t.rows.iter().flat_map(|r| r.cells.iter()) {
-                for cb in &cell.blocks {
-                    each_para(cb, depth + 1, f);
-                }
+/// Call `f` on every paragraph of a block, in document order, however deep its tables nest. The
+/// walk keeps its own stack instead of recursing, so it is complete: a text box it doesn't reach
+/// is shown nowhere, which pruning relies on (#1339). `_depth` is unused (callers keep passing it).
+pub(crate) fn each_para<'a>(b: &'a Block, _depth: usize, f: &mut dyn FnMut(&'a Paragraph)) {
+    // Most blocks are paragraphs, which need no stack.
+    if let Block::Para(p) = b {
+        return f(p);
+    }
+    let mut todo = vec![b];
+    while let Some(b) = todo.pop() {
+        match b {
+            Block::Para(p) => f(p),
+            Block::Table(t) => {
+                // Last first, so they come off the stack in document order.
+                let cells = t.rows.iter().rev().flat_map(|r| r.cells.iter().rev());
+                todo.extend(cells.flat_map(|c| c.blocks.iter().rev()).map(|cb| &**cb));
             }
         }
-        Block::Table(_) => {}
     }
 }
 
-fn each_para_mut(b: &mut Block, depth: usize, f: &mut dyn FnMut(&mut Paragraph)) {
-    match b {
-        Block::Para(p) => f(p),
-        Block::Table(t) if depth < 16 => {
-            for cell in t.rows.iter_mut().flat_map(|r| r.cells.iter_mut()) {
-                for cb in &mut cell.blocks {
-                    each_para_mut(Arc::make_mut(cb), depth + 1, f);
-                }
+/// [`each_para`], changing the paragraphs.
+pub(crate) fn each_para_mut(b: &mut Block, _depth: usize, f: &mut dyn FnMut(&mut Paragraph)) {
+    if let Block::Para(p) = b {
+        return f(p);
+    }
+    let mut todo = vec![b];
+    while let Some(b) = todo.pop() {
+        match b {
+            Block::Para(p) => f(p),
+            Block::Table(t) => {
+                let cells = t.rows.iter_mut().rev().flat_map(|r| r.cells.iter_mut().rev());
+                todo.extend(cells.flat_map(|c| c.blocks.iter_mut().rev()).map(Arc::make_mut));
             }
         }
-        Block::Table(_) => {}
+    }
+}
+
+/// Whether a paragraph anywhere in `b` (also inside tables) uses paragraph or character style
+/// `id` (tables to 16 levels deep). Table styles are the engine's `table.deleteStyle`'s job.
+fn uses_style(b: &Block, id: &str, depth: usize) -> bool {
+    let is = |s: &Option<String>| s.as_deref() == Some(id);
+    match b {
+        Block::Para(p) => is(&p.props.style) || is(&p.mark.style) || p.runs.iter().any(|r| is(&r.props.style)),
+        Block::Table(t) if depth < 16 => {
+            t.rows.iter().flat_map(|r| r.cells.iter()).flat_map(|c| c.blocks.iter()).any(|cb| uses_style(cb, id, depth + 1))
+        }
+        Block::Table(_) => false,
+    }
+}
+
+/// Point every paragraph and run in `b` that uses style `from` at `to`; returns how many
+/// paragraphs changed.
+fn restyle_block(b: &mut Block, from: &str, to: &Option<String>, depth: usize) -> usize {
+    let fix = |s: &mut Option<String>| {
+        if s.as_deref() == Some(from) {
+            s.clone_from(to);
+            true
+        } else {
+            false
+        }
+    };
+    match b {
+        Block::Para(p) => {
+            let mut changed = fix(&mut p.props.style);
+            changed |= fix(&mut p.mark.style);
+            for r in &mut p.runs {
+                changed |= fix(&mut r.props.style);
+            }
+            if changed {
+                p.normalize();
+                p.touch();
+            }
+            usize::from(changed)
+        }
+        Block::Table(t) => {
+            let mut n = 0;
+            if depth < 16 {
+                for cell in t.rows.iter_mut().flat_map(|r| r.cells.iter_mut()) {
+                    for cb in &mut cell.blocks {
+                        if uses_style(cb, from, depth + 1) {
+                            n += restyle_block(Arc::make_mut(cb), from, to, depth + 1);
+                        }
+                    }
+                }
+            }
+            n
+        }
     }
 }
 
 /// Text box story ids of a paragraph's shapes.
 fn box_ids(p: &Paragraph) -> impl Iterator<Item = u32> + '_ {
-    p.objects.iter().filter_map(|o| if let InlineObject::Shape { story: Some(id), .. } = o { Some(*id) } else { None })
+    p.objects.iter().flat_map(InlineObject::text_boxes)
 }
 
 impl Document {
+    /// Convert notes between footnotes and endnotes: footnotes (`foot`) become endnotes and
+    /// endnotes (`end`) footnotes, both at once to swap them. Each note's kind changes, as do its
+    /// reference marks wherever they are (the body, text boxes, the note's own mark) and the
+    /// note styles (Footnote Text and Footnote Reference to their endnote twins and back).
+    /// Returns how many notes changed.
+    pub fn convert_notes(&mut self, foot: bool, end: bool) -> usize {
+        use crate::para::NoteKind;
+        let flips: std::collections::HashSet<u32> = self
+            .parts
+            .iter()
+            .filter(|(_, p)| (foot && p.kind == PartKind::Footnote) || (end && p.kind == PartKind::Endnote))
+            .map(|(id, _)| *id)
+            .collect();
+        if flips.is_empty() {
+            return 0;
+        }
+        let swap = |s: &mut Option<String>| {
+            let to = match s.as_deref() {
+                Some("FootnoteText") => "EndnoteText",
+                Some("EndnoteText") => "FootnoteText",
+                Some("FootnoteReference") => "EndnoteReference",
+                Some("EndnoteReference") => "FootnoteReference",
+                _ => return,
+            };
+            *s = Some(to.to_string());
+        };
+        let refers = |p: &Paragraph| p.objects.iter().any(|o| matches!(o, InlineObject::NoteRef { id, .. } if flips.contains(id)));
+        // In a paragraph: flip the converted notes' marks and their runs' reference style; in a
+        // converted note's own story also the paragraph style.
+        let convert = |p: &mut Paragraph, in_note: bool| {
+            if !in_note && !refers(p) {
+                return;
+            }
+            let offs = p.object_offsets();
+            let mut at = Vec::new();
+            for (k, o) in p.objects.iter_mut().enumerate() {
+                if let InlineObject::NoteRef { kind, id, .. } = o
+                    && flips.contains(id)
+                {
+                    *kind = if *kind == NoteKind::Footnote { NoteKind::Endnote } else { NoteKind::Footnote };
+                    at.extend(offs.get(k).copied());
+                }
+            }
+            let mut start = 0usize;
+            for r in &mut p.runs {
+                let end = start.saturating_add(r.len);
+                if at.iter().any(|&o| o >= start && o < end) {
+                    swap(&mut r.props.style);
+                }
+                start = end;
+            }
+            if in_note {
+                swap(&mut p.props.style);
+                swap(&mut p.mark.style);
+            }
+            p.touch();
+        };
+        let touches = |b: &Block| {
+            let mut any = false;
+            each_para(b, 0, &mut |p| any |= refers(p));
+            any
+        };
+        for b in self.body.iter_mut() {
+            if touches(b) {
+                each_para_mut(Arc::make_mut(b), 0, &mut |p| convert(p, false));
+            }
+        }
+        for (id, part) in self.parts.iter_mut() {
+            let own = flips.contains(id);
+            if own {
+                part.kind = if part.kind == PartKind::Footnote { PartKind::Endnote } else { PartKind::Footnote };
+            }
+            for b in part.blocks.iter_mut() {
+                if own || touches(b) {
+                    each_para_mut(Arc::make_mut(b), 0, &mut |p| convert(p, own));
+                }
+            }
+        }
+        flips.len()
+    }
+
+    /// Point every paragraph and run that uses paragraph or character style `from` at `to`
+    /// (`None`: the default style), in every story, tables included. Returns how many paragraphs
+    /// changed. (Tables' own table styles are retargeted by the engine's table style deletion.)
+    pub fn restyle(&mut self, from: &str, to: Option<String>) -> usize {
+        let stories: Vec<crate::StoryRef> =
+            std::iter::once(crate::StoryRef::Body).chain(self.parts.keys().map(|k| crate::StoryRef::Part(*k))).collect();
+        let mut n = 0;
+        for s in stories {
+            let Ok(bl) = self.story_mut(s) else { continue };
+            for b in bl.iter_mut() {
+                if uses_style(b, from, 0) {
+                    n += restyle_block(Arc::make_mut(b), from, &to, 0);
+                }
+            }
+        }
+        n
+    }
+
     /// Insert plain text at `pos` (`\n` inside `s` is a manual line break; use
     /// [`Document::split_paragraph`] for paragraph breaks). Returns the position after it.
     pub fn insert_text(&mut self, pos: &Pos, s: &str, props: &CharProps) -> Result<Pos> {
@@ -138,7 +317,8 @@ impl Document {
         self.para_paths(a.story).into_iter().filter(|p| *p >= a.path && *p <= b.path).collect()
     }
 
-    /// Delete `a..b`. Returns the position where the deletion collapsed to.
+    /// Delete `a..b`. Returns the position where the deletion collapsed to. On error the document
+    /// is unchanged: both ends are checked before anything is deleted.
     pub fn delete_range(&mut self, a: &Pos, b: &Pos) -> Result<Pos> {
         let (a, b) = order(a, b);
         if a == b {
@@ -147,21 +327,48 @@ impl Document {
         if a.story != b.story {
             return Err(DocError::Invalid("range spans stories".into()));
         }
+        // Check both ends before the first edit, so an error never leaves the document half-deleted.
+        for p in [&a, &b] {
+            match self.para(p.story, &p.path) {
+                Some(para) if para.clamp(p.off) == p.off => {}
+                Some(_) => return Err(DocError::BadOffset(p.off)),
+                None => return Err(DocError::BadPath(p.path.to_string())),
+            }
+        }
+        // Content control markers whose partner is outside the range stay (the control is
+        // emptied, not broken).
+        let kept = self.kept_control_markers(&a, &b);
+        let kept_in = |path: &Path| -> Vec<usize> { kept.iter().filter(|(p, _)| p == path).map(|(_, o)| *o).collect() };
         if a.path == b.path {
-            self.para_mut(a.story, &a.path)?.delete(a.off, b.off)?;
+            self.para_mut(a.story, &a.path)?.delete_except(a.off, b.off, &kept_in(&a.path))?;
             return Ok(a);
         }
         if a.path.parent() == b.path.parent() {
             // Same container: trim the ends, drop the blocks between, join.
             let (ia, ib) = (a.path.last(), b.path.last());
+            // Kept markers of the paragraphs in between move to the join.
+            let mut moved: Vec<(InlineObject, CharProps)> = Vec::new();
+            for (path, off) in &kept {
+                if *path != a.path
+                    && *path != b.path
+                    && let Some(p) = self.para(a.story, path)
+                    && let Some(o) = p.object_at(*off)
+                {
+                    moved.push((o.clone(), p.props_of_char(*off).clone()));
+                }
+            }
             {
                 let pa = self.para_mut(a.story, &a.path)?;
                 let end = pa.len();
-                pa.delete(a.off, end)?;
+                pa.delete_except(a.off, end, &kept_in(&a.path))?;
+                for (o, props) in moved {
+                    let at = pa.len();
+                    pa.insert_object(at, o, &props)?;
+                }
             }
             let mut tail = {
                 let pb = self.para_mut(b.story, &b.path)?;
-                pb.delete(0, b.off)?;
+                pb.delete_except(0, b.off, &kept_in(&b.path))?;
                 pb.clone()
             };
             let bl = self.container_mut(a.story, &a.path)?;
@@ -185,7 +392,7 @@ impl Document {
                 let to = if *p == b.path { b.off } else { para.len() };
                 (from, to)
             };
-            self.para_mut(a.story, p)?.delete(from, to)?;
+            self.para_mut(a.story, p)?.delete_except(from, to, &kept_in(p))?;
         }
         // Drop top-level tables strictly between a and b at a's level.
         if a.path.depth() == 0 && b.path.depth() > 0 {
@@ -200,6 +407,27 @@ impl Document {
                 }
             }
         }
+        // From the very start of a top-level table to a top-level paragraph (Select All in a
+        // document that starts with a table, #1198): the tables are covered whole and go too,
+        // and the paragraphs left between join.
+        if a.path.depth() > 0 && b.path.depth() == 0 && a.off == 0 {
+            let ta = a.path.0.first().copied().unwrap_or(0) as usize;
+            let first = self.para_paths(a.story).into_iter().find(|q| q.0.first().is_some_and(|t| *t as usize == ta));
+            if first.as_ref() == Some(&a.path) {
+                let ib = b.path.last();
+                let bl = self.container_mut(a.story, &b.path)?;
+                let mut removed = 0;
+                for i in (ta..ib).rev() {
+                    if matches!(bl.get(i).map(|b| &**b), Some(Block::Table(_))) {
+                        bl.remove(i);
+                        removed += 1;
+                    }
+                }
+                let at = Pos { story: a.story, path: Path::top(ta), off: 0 };
+                let end = Pos { story: a.story, path: Path::top(ib.saturating_sub(removed)), off: 0 };
+                return self.delete_range(&at, &end);
+            }
+        }
         Ok(a)
     }
 
@@ -212,17 +440,35 @@ impl Document {
             let from = if p == a.path { a.off } else { 0 };
             let to = if p == b.path { b.off } else { para.len() };
             para.format(from, to, f)?;
-            // A fully selected paragraph also gets the mark formatted (Word does).
+            // A fully selected paragraph also gets the mark formatted (Word does), but a hyperlink
+            // ends before the mark: a linked mark would carry the link into every paragraph Enter
+            // makes from it (issue #413).
             if to == para.len() && (from == 0 || p != a.path) {
+                let style = para.mark.style.clone();
                 f(&mut para.mark);
+                if para.mark.link.take().is_some() {
+                    para.mark.style = style.filter(|s| s != "Hyperlink");
+                }
             }
         }
         Ok(())
     }
 
-    /// Apply `f` to the paragraph properties of every paragraph touched by `a..b`.
+    /// The paragraphs paragraph formatting of `a..b` applies to: [`Self::paths_between`] without
+    /// the last paragraph when a non-empty range ends at its start (Select Paragraph ends there
+    /// to include the paragraph mark). A caret applies to its own paragraph (Word, #418).
+    pub fn para_paths_in(&self, a: &Pos, b: &Pos) -> Vec<Path> {
+        let (a, b) = order(a, b);
+        let mut paths = self.paths_between(&a, &b);
+        if b.off == 0 && a.path != b.path && paths.len() > 1 && paths.last() == Some(&b.path) {
+            paths.pop();
+        }
+        paths
+    }
+
+    /// Apply `f` to the paragraph properties of every paragraph `a..b` covers ([`Self::para_paths_in`]).
     pub fn format_paragraphs(&mut self, a: &Pos, b: &Pos, f: &dyn Fn(&mut ParaProps)) -> Result<()> {
-        for p in self.paths_between(a, b) {
+        for p in self.para_paths_in(a, b) {
             let para = self.para_mut(a.story, &p)?;
             f(&mut para.props);
             para.touch();
@@ -232,7 +478,9 @@ impl Document {
 
     /// Copy `a..b` into a fragment (with copies of the text boxes in it).
     pub fn copy_range(&self, a: &Pos, b: &Pos) -> Fragment {
-        let blocks = self.copy_blocks(a, b);
+        let mut blocks = self.copy_blocks(a, b);
+        // Half a content control (one marker without the other) isn't copied.
+        crate::control::balance_blocks(&mut blocks);
         let parts = self.text_box_parts(&blocks);
         Fragment { blocks, parts }
     }
@@ -320,11 +568,11 @@ impl Document {
             each_para_mut(b, 0, &mut |p| {
                 let mut changed = false;
                 for o in p.objects.iter_mut() {
-                    if let InlineObject::Shape { story, .. } = o
-                        && let Some(old) = *story
-                    {
-                        *story = self.adopt_text_box(old, parts, depth, budget);
-                        changed = true;
+                    for story in o.text_box_slots() {
+                        if let Some(old) = *story {
+                            *story = self.adopt_text_box(old, parts, depth, budget);
+                            changed = true;
+                        }
                     }
                 }
                 if changed {
@@ -341,9 +589,15 @@ impl Document {
         }
         let src = parts.get(&old).or_else(|| self.parts.get(&old).filter(|p| p.kind == PartKind::TextBox))?;
         let mut blocks: Vec<Block> = src.blocks.iter().map(|b| (**b).clone()).collect();
+        // The copy keeps its text direction and alignment, not its link (a copy stands alone).
+        let body = crate::TextBody { next: None, ..src.body };
         *budget -= 1;
         self.adopt_text_boxes(&mut blocks, parts, depth + 1, budget);
-        Some(self.add_part(PartKind::TextBox, blocks.into_iter().map(Arc::new).collect()))
+        let id = self.try_add_part(PartKind::TextBox, blocks.into_iter().map(Arc::new).collect()).ok()?;
+        if let Some(p) = self.parts.get_mut(&id) {
+            p.body = body;
+        }
+        Some(id)
     }
 
     /// Insert a fragment at `pos`; returns the position after the pasted content.
@@ -452,6 +706,30 @@ mod tests {
     }
 
     #[test]
+    fn delete_range_with_bad_end_leaves_document_unchanged() {
+        let mut d = doc(&["one", "two", "three"]);
+        let before = d.plain_text(StoryRef::Body);
+        // Missing paragraph as the second end.
+        assert!(d.delete_range(&Pos::body(0, 1), &Pos::body(9, 0)).is_err());
+        assert_eq!(d.plain_text(StoryRef::Body), before);
+        // Offset past the end of the second paragraph.
+        assert!(d.delete_range(&Pos::body(0, 1), &Pos::body(1, 99)).is_err());
+        assert_eq!(d.plain_text(StoryRef::Body), before);
+        // Offset inside a multi-byte character.
+        let mut d = doc(&["abc", "\u{e9}x"]);
+        assert!(d.delete_range(&Pos::body(0, 1), &Pos::body(1, 1)).is_err());
+        assert_eq!(d.plain_text(StoryRef::Body), "abc\n\u{e9}x");
+        // Range entering a table with a bad offset at its start: the cell text stays.
+        let mut d = doc(&["before", "after"]);
+        d.insert_block(StoryRef::Body, &Path::top(1), Block::Table(Table::new(2, 1, 200.0))).unwrap();
+        d.insert_text(&Pos { story: StoryRef::Body, path: Path(vec![1, 0, 0, 0]), off: 0 }, "x", &CharProps::default()).unwrap();
+        let before = d.plain_text(StoryRef::Body);
+        let cell = Pos { story: StoryRef::Body, path: Path(vec![1, 1, 0, 0]), off: 0 };
+        assert!(d.delete_range(&Pos::body(0, 99), &cell).is_err());
+        assert_eq!(d.plain_text(StoryRef::Body), before);
+    }
+
+    #[test]
     fn delete_multi() {
         let mut d = doc(&["one", "two", "three"]);
         d.delete_range(&Pos::body(2, 2), &Pos::body(0, 1)).unwrap();
@@ -501,6 +779,9 @@ mod tests {
             stroke_width: 0.75,
             float: Default::default(),
             story,
+            freeform: None,
+            effects: Default::default(),
+            extra: Default::default(),
         }
     }
 

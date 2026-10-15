@@ -22,6 +22,7 @@ this file has the WordCraft specifics.
 | macOS | universal `Atelier Scribe.app` (its executable and icon file inside keep the machine name `WordCraft`) in a `.dmg`, universal CLI zip | Developer ID + notarization (`APPLE_*` secrets) |
 | Windows | x64, x86 and arm64 `.msi` + portable `.zip` | Azure Trusted Signing (`AZURE_*` secrets) |
 | Linux | x86_64 and aarch64 `.AppImage` (+ `.zsync` for AppImageUpdate), `.flatpak` bundle, `.deb`, `.rpm`, `.tar.gz`; Flathub manifest | checksums |
+| Linux riscv64 | `.tar.gz` (cross-compiled on `ubuntu-24.04`, glibc >= 2.39; CLI smoke-tested under QEMU) | checksums |
 | FreeBSD | x86_64 `.tar.gz` | checksums |
 | Web | `wordcraft-web-<version>.zip` (static site: `index.html`, wasm, glue) | none |
 
@@ -35,5 +36,5 @@ Local packaging: `packaging/macos/package.sh --arch universal`, `packaging/windo
 `packaging/linux/package.sh` (then `packaging/linux/flatpak-bundle.sh` for the Flatpak), `packaging/web/package.sh`.
 
 Dry run: `gh workflow run release.yml --ref <branch>` builds the unsigned jobs (version, Linux,
-Flatpak, FreeBSD, web) on any branch; the signing jobs are refused there by the `release`
+Linux riscv64, Flatpak, FreeBSD, web) on any branch; the signing jobs are refused there by the `release`
 environment's branch rule, so no draft release is made.

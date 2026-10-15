@@ -57,7 +57,9 @@ pub(crate) fn parse(word: &[u8], table: &[u8], fib: &Fib) -> Vec<Section> {
             })
         {
             for prl in sprm::iter(grpprl) {
-                if prl.op == S_ORIENTATION {
+                // Only a defined operand counts as explicit; anything else leaves the
+                // orientation to the page shape.
+                if prl.op == S_ORIENTATION && matches!(prl.operand.first(), Some(1 | 2)) {
                     explicit_orient = true;
                 }
                 apply_section(&mut props, &prl);
@@ -89,9 +91,12 @@ fn apply_section(s: &mut SectionProps, prl: &Prl) {
     match prl.op {
         S_BKC => {
             s.start = match prl.operand.first().copied().unwrap_or(2) {
+                // SBkcOperand ([MS-DOC] sprmSBkc): bkcContinuous, bkcNewColumn, bkcNewPage,
+                // bkcEvenPage, bkcOddPage; anything else falls back to the default (new page).
                 0 => SectionStart::Continuous,
-                1 => SectionStart::EvenPage,
-                2 => SectionStart::OddPage,
+                1 => SectionStart::NextColumn,
+                3 => SectionStart::EvenPage,
+                4 => SectionStart::OddPage,
                 _ => SectionStart::NextPage,
             };
         }
@@ -107,7 +112,12 @@ fn apply_section(s: &mut SectionProps, prl: &Prl) {
                 s.page_num_format = NumFormat::Decimal;
             }
         }
-        S_ORIENTATION => s.landscape = prl.operand.first() == Some(&1),
+        // SBOrientationOperand ([MS-DOC] §2.9.236): 1 portrait, 2 landscape.
+        S_ORIENTATION => match prl.operand.first() {
+            Some(1) => s.landscape = false,
+            Some(2) => s.landscape = true,
+            _ => {}
+        },
         S_HDR_TOP => {
             if let Some(v) = s16(prl) {
                 s.header = tw(v as i32);
@@ -161,6 +171,11 @@ fn apply_section(s: &mut SectionProps, prl: &Prl) {
 /// `[cps[i], cps[i+1])`. Stories 0-5 are footnote/endnote separators; every section then owns
 /// six stories in the order even header, odd (default) header, even footer, odd (default)
 /// footer, first header, first footer. The CPs are relative to the header subdocument.
+///
+/// The CPs of a well-formed PLC ascend, so the stories are disjoint. A story starting before
+/// the end of an earlier one (a hostile table pointing many sections at the same text, each
+/// read into its own part) is left empty, like a slot linked to the previous section's:
+/// every subdocument CP becomes at most one story.
 pub(crate) fn header_stories(table: &[u8], fib: &Fib) -> Vec<(u32, u32)> {
     let Some((fc, lcb)) = fib.pair(pair::PLCF_HDD) else { return Vec::new() };
     let Some(plc) = table.get(fc as usize..(fc as usize).saturating_add(lcb as usize)) else { return Vec::new() };
@@ -168,9 +183,12 @@ pub(crate) fn header_stories(table: &[u8], fib: &Fib) -> Vec<(u32, u32)> {
     let n = (lcb as usize / 4).min(6 + 6 * MAX_SECTIONS + 1);
     let cp_at = |i: usize| -> Option<u32> { plc.get(i * 4..i * 4 + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]])) };
     let mut stories = Vec::with_capacity(n);
+    let mut kept_to = 0u32;
     for i in 0..n.saturating_sub(1) {
         if let (Some(a), Some(b)) = (cp_at(i), cp_at(i + 1)) {
-            stories.push((a, b.max(a)));
+            let b = if a < kept_to { a } else { b.max(a) };
+            kept_to = kept_to.max(b);
+            stories.push((a, b));
         }
     }
     stories

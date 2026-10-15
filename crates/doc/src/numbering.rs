@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::props::{Align, CharProps};
 use crate::section::NumFormat;
+use crate::{DocError, free_id};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -34,6 +35,15 @@ pub struct Level {
     pub chr: CharProps,
     /// Restart after a higher level (true = after any higher level, the default).
     pub restart: bool,
+    /// Restart only after this level (1-based, Word's `w:lvlRestart`): a level 3 that restarts
+    /// after level 1 keeps counting across level 2 items. `None` restarts after the level just
+    /// above. Ignored when `restart` is false.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub restart_after: Option<u8>,
+    /// The tab stop that follows the number (Word's "Add tab stop at"), points from the
+    /// paragraph's left edge.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tab: Option<f32>,
     /// Show all levels as decimal (legal numbering).
     pub legal: bool,
     /// Paragraph style linked to this level (e.g. Heading 1 for outline numbering).
@@ -52,6 +62,8 @@ impl Default for Level {
             suffix: LevelSuffix::Tab,
             chr: CharProps::default(),
             restart: true,
+            restart_after: None,
+            tab: None,
             legal: false,
             style: None,
         }
@@ -64,6 +76,17 @@ pub struct AbstractNum {
     pub id: u32,
     pub name: Option<String>,
     pub levels: Vec<Level>,
+    /// Word's list identity (`w:nsid`, 8 hex digits), which it uses to match lists across
+    /// documents (paste, compare); kept from the file.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nsid: Option<String>,
+    /// The list template the definition came from (`w:tmpl`); kept from the file.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tmpl: Option<String>,
+    /// `w:multiLevelType` from the file (`singleLevel`, `multilevel`, `hybridMultilevel`);
+    /// `None`: derived from the levels.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub multi_level_type: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
@@ -197,26 +220,51 @@ impl Numbering {
         let n = self.num(num)?;
         self.abstracts.iter().find(|a| a.id == n.abstract_id)
     }
+    /// Whether a paragraph in list `num` at `level` gets a label ([`Counters::next_label`] gives
+    /// one), without counting it.
+    pub fn shows_label(&self, num: u32, level: u8) -> bool {
+        self.abstract_of(num).is_some() && self.level(num, level.min(8)).is_some_and(|d| d.format != NumFormat::None)
+    }
     pub fn level(&self, num: u32, level: u8) -> Option<&Level> {
         if let Some((_, l)) = self.num(num)?.level_overrides.iter().find(|(i, _)| *i == level) {
             return Some(l);
         }
         self.abstract_of(num)?.levels.get(level as usize)
     }
-    /// Create a new list of `kind`; returns the `num` id.
+    /// Create a new list of `kind`; returns the `num` id. List ids run out only past `u32::MAX`
+    /// lists, more than memory holds; then nothing is added and the id is 0, "no list".
     pub fn add_list(&mut self, kind: ListKind) -> u32 {
-        let aid = self.abstracts.iter().map(|a| a.id + 1).max().unwrap_or(0);
-        self.abstracts.push(AbstractNum { id: aid, name: None, levels: levels_for(kind) });
-        let nid = self.nums.iter().map(|n| n.id + 1).max().unwrap_or(1).max(1);
-        self.nums.push(Num { id: nid, abstract_id: aid, ..Default::default() });
-        nid
+        self.try_add_list(kind).unwrap_or(0)
     }
-    /// A new `num` that restarts numbering of an existing list.
+    /// [`Numbering::add_list`], or an error, adding nothing, when list ids are all taken.
+    pub fn try_add_list(&mut self, kind: ListKind) -> crate::Result<u32> {
+        self.try_add_levels(None, levels_for(kind))
+    }
+    /// A new list definition (`name`, `levels`) and a `num` for it; returns the `num` id. Both ids
+    /// are [`free_id`]s, so the largest ids a file can hold don't make them collide with its lists;
+    /// an error, adding nothing, when they are all taken.
+    pub fn try_add_levels(&mut self, name: Option<String>, levels: Vec<Level>) -> crate::Result<u32> {
+        let aid = free_id(self.abstracts.iter().map(|a| a.id).max(), self.abstracts.iter().map(|a| a.id), 0);
+        let (Some(aid), Some(nid)) = (aid, self.free_num_id()) else { return Err(DocError::Invalid("no free list id".into())) };
+        self.abstracts.push(AbstractNum { id: aid, name, levels, ..Default::default() });
+        self.nums.push(Num { id: nid, abstract_id: aid, ..Default::default() });
+        Ok(nid)
+    }
+    /// A `num` id no list has (`num` 0 means "no list"), `None` when they are all taken.
+    fn free_num_id(&self) -> Option<u32> {
+        free_id(self.nums.iter().map(|n| n.id).max(), self.nums.iter().map(|n| n.id), 1)
+    }
+    /// A new `num` that restarts numbering of an existing list (`None`: no such list, or list ids
+    /// are all taken).
     pub fn restart(&mut self, num: u32) -> Option<u32> {
-        let a = self.num(num)?.abstract_id;
-        let nid = self.nums.iter().map(|n| n.id + 1).max().unwrap_or(1).max(1);
-        let starts = self.abstracts.iter().find(|x| x.id == a).map(|x| x.levels.iter().enumerate().map(|(i, l)| (i as u8, l.start)).collect());
-        self.nums.push(Num { id: nid, abstract_id: a, start_overrides: starts.unwrap_or_default(), ..Default::default() });
+        let source = self.num(num)?;
+        let a = source.abstract_id;
+        let level_overrides = source.level_overrides.clone();
+        let nid = self.free_num_id()?;
+        // Every level starts again at its own effective start, so a level this list defines itself keeps its start.
+        let levels = self.abstracts.iter().find(|x| x.id == a).map_or(0, |x| x.levels.len());
+        let start_overrides = (0..levels).filter_map(|i| self.level(num, i as u8).map(|l| (i as u8, l.start))).collect();
+        self.nums.push(Num { id: nid, abstract_id: a, start_overrides, level_overrides });
         Some(nid)
     }
     /// Find an existing list whose first level matches `kind`, so consecutive bullet clicks reuse it.
@@ -240,6 +288,12 @@ pub struct Counters {
 }
 
 impl Counters {
+    /// The current value of each level of `num`'s list (0 for a level not counted yet).
+    pub fn values(&self, numbering: &Numbering, num: u32) -> Option<[u32; 9]> {
+        let abs = numbering.abstract_of(num)?;
+        Some(self.state.get(&abs.id).copied().unwrap_or([0; 9]))
+    }
+
     /// Advance the counter for `num`/`level` and return the label (`"1."`, `"a)"`, `"•"`).
     pub fn next_label(&mut self, numbering: &Numbering, num: u32, level: u8) -> Option<(String, Level)> {
         let n = numbering.num(num)?;
@@ -267,8 +321,13 @@ impl Counters {
                 *v = def.start;
             }
         }
-        for deeper in st.iter_mut().skip(lv + 1) {
-            *deeper = 0;
+        // Deeper levels restart, unless they never restart or only restart after a level above
+        // this one (Word's lvlRestart).
+        for (d, deeper) in st.iter_mut().enumerate().skip(lv + 1) {
+            let restarts = level_def(d).is_none_or(|l| l.restart && l.restart_after.is_none_or(|k| lv < k as usize));
+            if restarts {
+                *deeper = 0;
+            }
         }
         let vals = *st;
         if def.format == NumFormat::Bullet {
@@ -284,7 +343,13 @@ impl Counters {
                 let k = (d as usize).saturating_sub(1).min(8);
                 let val = vals.get(k).copied().unwrap_or(0);
                 let val = if val == 0 { level_def(k).map(|l| l.start).unwrap_or(1) } else { val };
-                let fmt = if def.legal && k != lv { NumFormat::Decimal } else { level_def(k).map(|l| l.format).unwrap_or(NumFormat::Decimal) };
+                // Legal numbering (w:isLgl) shows every level in Arabic digits, whatever its own
+                // format (二 of a Chinese outline becomes 2 in "2.1").
+                let fmt = match level_def(k).map(|l| l.format).unwrap_or(NumFormat::Decimal) {
+                    NumFormat::DecimalZero => NumFormat::DecimalZero,
+                    _ if def.legal => NumFormat::Decimal,
+                    f => f,
+                };
                 label.push_str(&fmt.format(val));
             } else {
                 label.push(c);
@@ -320,6 +385,28 @@ mod tests {
     }
 
     #[test]
+    fn levels_restart_only_after_their_restart_level() {
+        let mut n = Numbering::default();
+        let id = n.add_list(ListKind::Legal);
+        if let Some(a) = n.abstracts.first_mut() {
+            // Level 3 restarts only after level 1; level 2 never restarts.
+            a.levels[2].restart_after = Some(1);
+            a.levels[2].text = "(%3)".into();
+            a.levels[1].restart = false;
+        }
+        let mut c = Counters::default();
+        let mut l = |lv| c.next_label(&n, id, lv).unwrap().0;
+        assert_eq!(l(0), "1.");
+        assert_eq!(l(1), "1.1.");
+        assert_eq!(l(2), "(1)");
+        assert_eq!(l(1), "1.2.");
+        assert_eq!(l(2), "(2)", "level 2 doesn't restart level 3");
+        assert_eq!(l(0), "2.");
+        assert_eq!(l(1), "2.3.", "level 2 never restarts");
+        assert_eq!(l(2), "(1)", "level 1 restarts level 3");
+    }
+
+    #[test]
     fn numbered_labels() {
         let mut n = Numbering::default();
         let id = n.add_list(ListKind::Numbered);
@@ -331,6 +418,32 @@ mod tests {
         assert_eq!(c.next_label(&n, id, 0).unwrap().0, "3.");
         assert_eq!(c.next_label(&n, id, 1).unwrap().0, "a.");
         assert!(c.next_label(&n, 999, 0).is_none());
+    }
+
+    #[test]
+    fn east_asian_labels_and_legal_numbering() {
+        // A Chinese outline: 第一章, then "一、" items, and a legal level showing 1.1.
+        let mut n = Numbering::default();
+        let id = n.add_list(ListKind::Numbered);
+        if let Some(a) = n.abstracts.first_mut() {
+            a.levels[0] = Level { format: NumFormat::ChineseCounting, text: "第%1章".into(), ..Level::default() };
+            a.levels[1] = Level { format: NumFormat::ChineseCounting, text: "%2、".into(), ..Level::default() };
+            a.levels[2] = Level { format: NumFormat::ChineseCounting, text: "%1.%2.%3".into(), legal: true, ..Level::default() };
+            a.levels[3] = Level { format: NumFormat::ChineseCounting, text: "（%4）".into(), ..Level::default() };
+        }
+        let mut c = Counters::default();
+        let mut l = |lv| c.next_label(&n, id, lv).unwrap().0;
+        assert_eq!(l(0), "第一章");
+        assert_eq!(l(1), "一、");
+        assert_eq!(l(1), "二、");
+        assert_eq!(l(1), "三、");
+        assert_eq!(l(2), "1.3.1", "legal numbering is decimal on every level");
+        assert_eq!(l(3), "（一）");
+        for _ in 0..9 {
+            l(3);
+        }
+        assert_eq!(l(3), "（十一）");
+        assert_eq!(l(0), "第二章");
     }
 
     #[test]
@@ -356,5 +469,20 @@ mod tests {
         let b = n.add_list(ListKind::Bullet);
         assert_eq!(c.next_label(&n, b, 0).unwrap().0, "•");
         assert_eq!(n.find_kind(ListKind::Bullet), Some(b));
+    }
+
+    #[test]
+    fn restart_keeps_the_list_s_own_level_definitions() {
+        let mut n = Numbering::default();
+        let id = n.add_list(ListKind::Numbered);
+        let own = Level { format: NumFormat::UpperRoman, text: "Part %1".into(), indent: 90.0, hanging: 40.0, start: 5, ..Level::default() };
+        if let Some(num) = n.nums.iter_mut().find(|x| x.id == id) {
+            num.level_overrides.push((0, own.clone()));
+        }
+        let r = n.restart(id).unwrap();
+        assert_eq!(n.num(r).unwrap().level_overrides, vec![(0, own.clone())]);
+        assert_eq!(n.level(r, 0), Some(&own));
+        let mut c = Counters::default();
+        assert_eq!(c.next_label(&n, r, 0).unwrap().0, "Part V");
     }
 }

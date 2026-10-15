@@ -226,7 +226,7 @@ impl Bridge {
                 Ok(Value::Null)
             }
             "Document_cursorInField" => {
-                let at = s.sel.ordered().0;
+                let at = if s.sel.is_collapsed() { s.doc.past_field_ends(&s.sel.focus) } else { s.sel.ordered().0 };
                 let list = self.fields(s);
                 // The innermost field holding the caret: the last one starting before it.
                 let hit = list.iter().enumerate().rfind(|(_, f)| f.contains(&at));
@@ -373,6 +373,9 @@ impl Bridge {
     fn insert_field(&mut self, s: &mut Session, note: i64, content: Option<Fragment>) -> Result<(u64, ZField), String> {
         if !fields::can_insert_at(&s.doc, &s.sel.ordered().0) {
             return Err("a citation can't go here (only in the text, a footnote or an endnote)".into());
+        }
+        if s.sel.is_collapsed() {
+            s.sel = Selection::caret(s.doc.past_field_ends(&s.sel.focus));
         }
         self.fields(s);
         self.begin_edit(s);
@@ -568,6 +571,10 @@ fn remove_empty_note(s: &mut Session, f: &ZField) -> Option<Pos> {
     for b in blocks {
         if let Some(p) = b.as_para() {
             rest.push_str(&p.text);
+            // A picture, shape, equation... is content too, even though it has no text.
+            if !p.objects.iter().all(|o| o.is_marker() || matches!(o, InlineObject::NoteRef { .. })) {
+                return None;
+            }
         }
     }
     if rest.chars().any(|c| c != OBJ && !c.is_whitespace()) {
