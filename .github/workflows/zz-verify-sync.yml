@@ -33,7 +33,15 @@ jobs:
         with:
           components: rustfmt, clippy
           targets: wasm32-unknown-unknown
+      # As the FreeBSD workflow does: the font tests run against craft-fonts.
+      - uses: actions/checkout@v4
+        with:
+          repository: storytold/craft-fonts
+          ref: 8dcdacd5153e64560d109541a47d806f26f048c0
+          path: craft-fonts
       - name: Gate
+        env:
+          CRAFT_FONTS_DIR: ${{ github.workspace }}/craft-fonts
         shell: bash
         run: |
           set -o pipefail
