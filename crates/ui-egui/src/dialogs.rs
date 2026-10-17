@@ -2385,7 +2385,7 @@ fn body(app: &mut WordApp, ui: &mut Ui, d: &mut Dialog) -> bool {
                     ui.label(crate::i18n::fmt(tl!("Version {version} ({build})"), &[("version", env!("CARGO_PKG_VERSION")), ("build", build)]));
                     ui.label(tl!("The Nation's word processor. Part of Atelier, built on WordCraft by the ArtCraft team."));
                     ui.add_space(6.0);
-                    ui.hyperlink_to("aetherionnnation.com/atelier/scribe", crate::links::APP_PAGE);
+                    ui.hyperlink_to(tl!("aetherionnnation.com/atelier/scribe"), crate::links::APP_PAGE);
                     ui.hyperlink_to(tl!("Join the Nation: aetherionnnation.com"), crate::links::NATION);
                     ui.hyperlink_to(tl!("Source code: github.com/Aetherion-Nation-Builders/atelier-scribe"), crate::links::GITHUB);
                     ui.add_space(6.0);
