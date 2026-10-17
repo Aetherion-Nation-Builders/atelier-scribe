@@ -13,9 +13,9 @@ use crate::{CmdError, CmdResult, CommandSpec, Session, p};
 pub const LEVELS: [&str; 4] = ["paragraphStyle", "paragraphFormatting", "characterStyle", "characterFormatting"];
 
 /// Direct character properties that aren't formatting (links, revisions, proofing, direction).
-const CHAR_SKIP: [&str; 7] = ["style", "link", "ins", "del", "lang", "noProof", "rtl"];
+const CHAR_SKIP: [&str; 8] = ["style", "link", "ins", "del", "fmtChange", "lang", "noProof", "rtl"];
 /// Direct paragraph properties the inspector doesn't list (lists have their own UI).
-const PARA_SKIP: [&str; 2] = ["style", "numbering"];
+const PARA_SKIP: [&str; 4] = ["style", "numbering", "numChange", "fmtChange"];
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
@@ -28,6 +28,7 @@ pub fn specs() -> Vec<CommandSpec> {
             Ok(out)
         })
         .params(r#"{"value"?: bool (show/hide the pane)}"#)
+        .key("Shift+F1")
         .pure(),
         CommandSpec::new("styles.inspect", "Inspect Styles at Selection", "Home › Styles › Style Inspector", |s, _| Ok(inspect(s))).pure(),
         CommandSpec::new("styles.inspectorClear", "Clear Formatting Level", "Home › Styles › Style Inspector", clear)
