@@ -5,7 +5,9 @@
 //! accents, `\overbrace`/`\underbrace`, `\text`/`\mathrm`/`\mathbf`/`\mathbb`…, function names,
 //! spacing and every named symbol in [`crate::math_symbols`]. Unknown commands stay as text.
 
-use crate::math::{Arg, FracKind, MAX_DEPTH, MNode, MRun, MScr, MSty, ScriptKind, is_nary_char, math_class, merge_runs};
+use crate::math::{
+    Arg, FracKind, MAX_DEPTH, MNode, MRun, MScr, MSty, ScriptKind, WRAP_DEPTH, any_too_deep, is_nary_char, math_class, merge_runs, too_deep,
+};
 use crate::math_linear::{FUNCTION_NAMES, map_args};
 use crate::math_symbols::{name_of, symbol};
 
@@ -21,12 +23,27 @@ enum Tok {
     Ch(char),
 }
 
+/// Commands whose `{…}` argument is text, where spaces are part of the content.
+const TEXT_COMMANDS: &[&str] = &["text", "textrm", "mbox", "textnormal", "textbf", "textit"];
+
 fn tokenize(s: &str) -> Vec<Tok> {
     let cs: Vec<char> = s.chars().take(20_000).collect();
     let mut out = Vec::new();
     let mut i = 0;
+    // A text command was just read: its `{` starts text, where spaces count (#448).
+    let mut text_next = false;
+    // Brace depth inside a text argument.
+    let mut text_depth: Option<u32> = None;
     while let Some(&c) = cs.get(i) {
         i += 1;
+        if text_depth.is_some() && matches!(c, ' ' | '\t' | '\n' | '\r') {
+            // A run of white space is one space, as in LaTeX.
+            if out.last() != Some(&Tok::Ch(' ')) {
+                out.push(Tok::Ch(' '));
+            }
+            continue;
+        }
+        let was_text_next = std::mem::take(&mut text_next);
         match c {
             '\\' => {
                 let start = i;
@@ -46,15 +63,31 @@ fn tokenize(s: &str) -> Vec<Tok> {
                         None => {}
                     }
                 } else {
-                    out.push(Tok::Cmd(cs.get(start..i).unwrap_or(&[]).iter().collect()));
+                    let name: String = cs.get(start..i).unwrap_or(&[]).iter().collect();
+                    text_next = text_depth.is_none() && TEXT_COMMANDS.contains(&name.as_str());
+                    out.push(Tok::Cmd(name));
                 }
             }
-            '{' => out.push(Tok::Open),
-            '}' => out.push(Tok::Close),
+            '{' => {
+                text_depth = match text_depth {
+                    Some(d) => Some(d.saturating_add(1)),
+                    None if was_text_next => Some(0),
+                    None => None,
+                };
+                out.push(Tok::Open);
+            }
+            '}' => {
+                text_depth = match text_depth {
+                    Some(0) | None => None,
+                    Some(d) => Some(d.saturating_sub(1)),
+                };
+                out.push(Tok::Close);
+            }
             '^' => out.push(Tok::Sup),
             '_' => out.push(Tok::Sub),
             '&' => out.push(Tok::Amp),
-            ' ' | '\t' | '\n' | '\r' => {}
+            // White space between a text command and its `{` doesn't end the wait.
+            ' ' | '\t' | '\n' | '\r' => text_next = was_text_next,
             '~' => out.push(Tok::Ch('\u{A0}')),
             c => out.push(Tok::Ch(c)),
         }
@@ -78,7 +111,7 @@ pub fn parse_latex(s: &str) -> Arg {
         p.i += 1;
     }
     let out = merge_runs(out);
-    if out.iter().any(|n| matches!(n, MNode::Run(r) if r.text.contains('#'))) {
+    if out.iter().any(|n| matches!(n, MNode::Run(r) if !r.nor && r.text.contains('#'))) {
         return vec![MNode::EqArr { rows: vec![out] }];
     }
     out
@@ -116,8 +149,13 @@ impl Lp {
                 Tok::Sup | Tok::Sub => {
                     self.i += 1;
                     let s = self.arg();
-                    let base = out.pop();
-                    out.push(script(base, tok == Tok::Sup, s));
+                    if out.last().is_some_and(too_deep) {
+                        // Too deep to wrap (`x^1^1^1…`): the operator is dropped, the script kept.
+                        out.extend(s);
+                    } else {
+                        let base = out.pop();
+                        out.push(script(base, tok == Tok::Sup, s));
+                    }
                 }
                 Tok::Cmd(ref c) if c == "limits" || c == "nolimits" || c == "displaystyle" || c == "textstyle" => {
                     self.i += 1;
@@ -140,7 +178,7 @@ impl Lp {
         }
         self.depth -= 1;
         // Big operators take the following term as their operand.
-        nary_operands(out)
+        nary_operands(out, self.depth)
     }
 
     /// A command argument: a `{group}` or one token.
@@ -193,10 +231,14 @@ impl Lp {
         }
         self.i += 1;
         let mut level = 0i32;
+        // The previous token was a control word (`\backslash{}`: the empty braces end its name).
+        let mut after_word = false;
         while let Some(t) = self.peek().cloned() {
             self.i += 1;
+            let was_word = std::mem::replace(&mut after_word, matches!(&t, Tok::Cmd(c) if c.chars().all(|c| c.is_ascii_alphabetic())));
             match t {
                 Tok::Close if level == 0 => break,
+                Tok::Open if was_word && self.peek() == Some(&Tok::Close) => self.i += 1,
                 Tok::Open => {
                     level += 1;
                     s.push('{');
@@ -484,6 +526,10 @@ impl Lp {
         while let Some(t @ (Tok::Sup | Tok::Sub)) = self.peek().cloned() {
             self.i += 1;
             let s = self.arg();
+            if any_too_deep(&e) {
+                e.extend(s);
+                continue;
+            }
             let base = if e.len() == 1 { e.pop() } else { Some(group(std::mem::take(&mut e))) };
             e.push(script(base, t == Tok::Sup, s));
         }
@@ -598,12 +644,14 @@ fn script(base: Option<MNode>, sup: bool, s: Arg) -> MNode {
 }
 
 /// Big operators without an operand take the atoms after them up to a relation or binary operator.
-fn nary_operands(a: Arg) -> Arg {
+/// `depth` is how deep the operators already sit; past [`WRAP_DEPTH`] they stay without operand
+/// (`\sum\sum\sum…` must not nest once per operator).
+fn nary_operands(a: Arg, depth: usize) -> Arg {
     let mut out: Arg = Vec::with_capacity(a.len());
     let mut it = a.into_iter().peekable();
     while let Some(n) = it.next() {
         match n {
-            MNode::Nary { chr, lim_loc, grow, sub_hide, sup_hide, sub, sup, e } if e.is_empty() => {
+            MNode::Nary { chr, lim_loc, grow, sub_hide, sup_hide, sub, sup, e } if e.is_empty() && depth < WRAP_DEPTH => {
                 let mut body = Vec::new();
                 while let Some(next) = it.peek() {
                     let stop = match next {
@@ -619,8 +667,14 @@ fn nary_operands(a: Arg) -> Arg {
                         body.push(x);
                     }
                 }
-                let body = nary_operands(body);
-                out.push(MNode::Nary { chr, lim_loc, grow, sub_hide, sup_hide, sub, sup, e: merge_runs(body) });
+                let body = merge_runs(nary_operands(body, depth + 1));
+                if any_too_deep(&body) {
+                    // No room to wrap the operand: it follows the operator.
+                    out.push(MNode::Nary { chr, lim_loc, grow, sub_hide, sup_hide, sub, sup, e });
+                    out.extend(body);
+                } else {
+                    out.push(MNode::Nary { chr, lim_loc, grow, sub_hide, sup_hide, sub, sup, e: body });
+                }
             }
             other => out.push(other),
         }
@@ -694,6 +748,21 @@ fn chars(text: &str, s: &mut String) {
     }
 }
 
+/// Text inside `\text{…}`: only what LaTeX would read as markup is escaped.
+fn text_chars(text: &str, s: &mut String) {
+    for c in text.chars() {
+        match c {
+            '{' | '}' | '%' | '$' | '#' | '&' | '_' | '~' => {
+                s.push('\\');
+                s.push(c);
+            }
+            // `{}` ends the command name without adding a space (spaces count in text).
+            '\\' => s.push_str("\\backslash{}"),
+            c => s.push(c),
+        }
+    }
+}
+
 fn delim_tex(c: Option<char>) -> String {
     match c {
         None => ".".into(),
@@ -733,7 +802,7 @@ fn node(n: &MNode, s: &mut String, depth: usize) {
             };
             s.push_str(open);
             if r.nor {
-                s.push_str(&r.text);
+                text_chars(&r.text, s);
             } else {
                 chars(&r.text, s);
             }
