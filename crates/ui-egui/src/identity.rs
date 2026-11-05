@@ -147,7 +147,7 @@ mod tests {
         let (code, shared, app) = all.first().copied().unwrap();
         assert_eq!((code, shared), ("fr", "\tSave\tEnregistrer\n"));
         assert!(app.starts_with("\tQuit WordCraft\tQuitter Atelier Scribe\n\tQuit Atelier Scribe\tQuitter Atelier Scribe\n"), "{app}");
-        assert!(app.contains("\tJoin the Nation\t"), "our own strings are added: {app}");
+        assert!(app.contains("\tThe Nation\tLa Nation\n"), "our own strings are added: {app}");
     }
 
     fn branded_for_test() -> Vec<(&'static str, &'static str, &'static str)> {
