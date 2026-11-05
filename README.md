@@ -52,10 +52,10 @@ Every screenshot below is WordCraft itself, rendered offscreen by its own UI tes
 
 ## Why WordCraft
 
-- **Familiar.** Word's ribbon tabs, groups, shortcuts and behaviour: Enter continues a list,
+- **Familiar.** Ribbon tabs, groups, shortcuts and behaviour: Enter continues a list,
   Tab demotes it, Ctrl/⌘+B bolds the word under the caret, the Styles gallery previews styles live,
   F4 repeats, F7 checks spelling, F8 extends the selection.
-- **Your files.** Opens and saves .docx (OOXML), and also .odt, .rtf, .html, .md, .tex (LaTeX), .txt; opens Word 97-2003 .doc; exports PDF
+- **Your files.** Opens and saves .docx (OOXML), and also .odt, .rtf, .html, .md, .tex (LaTeX), .txt; opens legacy 97-2003 .doc; exports PDF
   with real, selectable text, links and bookmarks.
 - **Fast.** Paragraph layout is cached, so typing in a 188-page document re-lays it out in about
   1.4 ms; pages render on demand.
@@ -83,8 +83,8 @@ Every screenshot below is WordCraft itself, rendered offscreen by its own UI tes
 | **References** | Table of contents, footnotes and endnotes, citations and bibliography (APA, MLA, Chicago, IEEE), captions, table of figures, cross-references, index, table of authorities |
 | **Review** | Spelling and grammar with suggestions, thesaurus, word count, comments in margin balloons or a pane, track changes, accept/reject, compare documents, restrict editing, accessibility checker, document inspector |
 | **Mailings** | Mail merge from CSV, merge fields, address block, greeting line, rules, preview, finish to a document; envelopes and labels |
-| **View** | Print layout, web layout, draft, read mode, focus, zoom, one/multiple pages, page width, Navigation pane, rulers, gridlines, dark mode; interface in English, 简体中文, 繁體中文, 日本語, Português (Brasil), Español or Українська (follows the system language by default) |
-| **Files** | .docx read/write (opens in Word), Word 97-2003 .doc import, PDF export, .odt, .rtf, .html, .md, .tex, .txt import/export, page images |
+| **View** | Print layout, web layout, draft, read mode, focus, zoom, one/multiple pages, page width, Navigation pane, rulers, gridlines, dark mode; interface in English, 简体中文, 繁體中文, 日本語, Português (Brasil), Español, Українська, Српски / Srpski, Eesti, Türkçe, Русский, Italiano, Deutsch, Polski, Čeština, Magyar, Français, Български, Tiếng Việt, 한국어, Svenska, Hrvatski, Nederlands, Dansk, Română, العربية (mirrored) or Slovenščina (follows the system language by default) |
+| **Files** | .docx read/write, legacy 97-2003 .doc import, PDF export, .odt, .rtf, .html, .md, .tex, .txt import/export, page images |
 
 The honest picture, area by area, is in [ROADMAP.md](ROADMAP.md), the
 [parity assessment](docs/target-app-parity.md) and the generated
@@ -97,6 +97,19 @@ git clone https://github.com/storytold/wordcraft
 cd wordcraft
 cargo run --release -p wordcraft -- --sample        # the desktop app with the sample document
 cargo run --release -p wordcraft -- report.docx     # open a document
+```
+
+The interface translations and the spelling and hyphenation data come from
+[craft-i18n](https://github.com/storytold/craft-i18n), an optional build input. To build with them,
+check it out at the commit in `craft-i18n.rev` and point `CRAFT_I18N_DIR` at it (an absolute
+path); without it WordCraft builds with an English interface, English spelling falls back to an
+installed Hunspell English or craft-proof's built-in word list, and only Bulgarian, Turkish and
+Russian hyphenate (by rule):
+
+```sh
+git clone https://github.com/storytold/craft-i18n ../craft-i18n
+git -C ../craft-i18n checkout "$(cat craft-i18n.rev)"
+CRAFT_I18N_DIR="$PWD/../craft-i18n" cargo run --release -p wordcraft -- --sample
 ```
 
 Command line:
@@ -152,12 +165,12 @@ covers every target starting with it (`wordcraft*=debug`). The logger is
 | Layer | Crate | Job |
 |---|---|---|
 | L0 | `wordcraft-geom` | units and measurements |
-| L1 | `wordcraft-doc`, `wordcraft-fonts`, `wordcraft-proof` | document model and editing; fonts and shaping; spelling, grammar, hyphenation |
+| L1 | `wordcraft-doc`, `wordcraft-fonts`, `wordcraft-proof` ([`craft-proof`](https://github.com/storytold/craft-libs/tree/main/crates/proof) from craft-libs) | document model and editing; fonts and shaping; spelling, grammar, hyphenation (data: craft-i18n `language-data/`, `CRAFT_I18N_DIR`) |
 | L2 | `wordcraft-layout`, `wordcraft-docx`, `wordcraft-formats` | line breaking, pagination, tables, notes, hit testing; OOXML; ODT/RTF/HTML/Markdown/TXT |
-| L3 | `wordcraft-render`, `wordcraft-pdf` | rasteriser (vello_cpu); PDF (krilla) |
-| L4 | `wordcraft-engine` | session, undo, 422 commands, Word feature catalog |
+| L3 | `wordcraft-render`, `wordcraft-pdf` | rasteriser (vello_cpu); PDF ([craft-pdf](docs/shared-pdf.md), Krilla) |
+| L4 | `wordcraft-engine` | session, undo, 422 commands, document feature catalog |
 | L5 | `wordcraft-mcp` | MCP server |
-| L6 | `wordcraft-ui-egui` | the Word-style front end (swappable) |
+| L6 | `wordcraft-ui-egui` | the word processor front end (swappable) |
 | apps | `wordcraft`, `wordcraft-cli`, `wordcraft-web` | desktop, command line, browser |
 
 `cargo xtask ci` runs formatting, clippy, ~800 tests, the asset-attribution check, the layering
@@ -165,12 +178,13 @@ check and the wasm build. Contributor and agent instructions: [AGENTS.md](AGENTS
 
 ## Roadmap
 
-WordCraft is in **alpha**. It covers 88% of Word's ribbon features with commands today; counting
-depth, file fidelity, stability and the rest, we estimate it is about 60% of the way to replacing
-all of Word for real work, about 55% for a typical professional's weekly work and about 63% for
-everyday essentials. Beta needs testing against real-world .docx files, keeping charts and SmartArt
-through a round trip, pagination closer to Word's, a stability sweep and native printing. Details
-and estimates: [ROADMAP.md](ROADMAP.md) and [where we fall short](docs/gaps.md).
+WordCraft is in **alpha**. It has commands for 97% of the ribbon and menu features in its feature catalog
+([`docs/parity-checklist.md`](docs/parity-checklist.md)) today; counting
+depth, file fidelity, stability and the rest, we estimate it is about 60% ready for real work,
+about 55% for a typical professional's weekly work and about 63% for everyday essentials. Beta
+needs testing against real-world .docx files, keeping charts and SmartArt through a round trip,
+closer pagination fidelity, a stability sweep and native printing. Details and estimates:
+[ROADMAP.md](ROADMAP.md) and [where we fall short](docs/gaps.md).
 
 ## License
 
