@@ -20,7 +20,7 @@ this file has the WordCraft specifics.
 | Platform | Artifacts | Signing |
 |---|---|---|
 | macOS | universal `Atelier Scribe.app` (its executable and icon file inside keep the machine name `WordCraft`) in a `.dmg`, universal CLI zip | Developer ID + notarization (`APPLE_*` secrets) |
-| Windows | x64, x86 and arm64 `.msi` + portable `.zip` | Azure Trusted Signing (`AZURE_*` secrets) |
+| Windows | x64, x86 and arm64 `.msi` (one dual-scope package: per-user by default, needs no admin rights; "Everyone on this computer" installs per machine) + portable `.zip` | Azure Trusted Signing (`AZURE_*` secrets) |
 | Linux | x86_64 and aarch64 `.AppImage` (+ `.zsync` for AppImageUpdate), `.flatpak` bundle, `.deb`, `.rpm`, `.tar.gz`; Flathub manifest | checksums |
 | Linux riscv64 | `.tar.gz` (cross-compiled on `ubuntu-24.04`, glibc >= 2.39; CLI smoke-tested under QEMU) | checksums |
 | FreeBSD | x86_64 `.tar.gz` | checksums |
@@ -29,7 +29,7 @@ this file has the WordCraft specifics.
 3. The run drafts a GitHub Release `WordCraft v<version>` with `SHA256SUMS.txt`; review and publish it.
 
 Signing secrets live in the repository's `release` environment (deployment branch: `release` only),
-synced from the release manager's machine (`craftrules/release/signing-setup.md`). Missing secrets
+synced from the release manager's machine. Missing secrets
 produce unsigned builds with a warning, so forks still build.
 
 Local packaging: `packaging/macos/package.sh --arch universal`, `packaging/windows/package.ps1`,
