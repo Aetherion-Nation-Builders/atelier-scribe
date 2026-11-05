@@ -43,11 +43,15 @@ pub use craft_i18n::{fmt, fmt_plain};
 
 include!(concat!(env!("OUT_DIR"), "/craft_i18n.rs"));
 
+/// The embedded catalogs as this app reads them: with the brand layer applied
+/// (`identity::branded`, see `docs/brand.md`).
+static CATALOGS: LazyLock<Vec<(&'static str, &'static str, &'static str)>> = LazyLock::new(|| crate::identity::branded(CRAFT_I18N));
+
 /// The embedded catalogs, offering exactly the languages in [`LANGUAGES`]. Built on first use;
 /// a locale is parsed on its first lookup.
 static I18N: LazyLock<I18n> = LazyLock::new(|| {
     let offered: Vec<&str> = LANGUAGES.iter().map(|l| l.code).collect();
-    let (i18n, problems) = I18n::new(CRAFT_I18N, &offered);
+    let (i18n, problems) = I18n::new(CATALOGS.as_slice(), &offered);
     problems.iter().for_each(|p| log::warn!("interface catalogs: {p}"));
     i18n
 });
@@ -210,7 +214,7 @@ impl Lang {
     /// The embedded catalogs (shared, then WordCraft's) this language reads; none for English.
     fn catalog_texts(self) -> impl Iterator<Item = &'static str> {
         let code = self.code();
-        CRAFT_I18N.iter().filter(move |(c, ..)| c.eq_ignore_ascii_case(code)).flat_map(|(_, shared, app)| [*shared, *app])
+        CATALOGS.iter().filter(move |(c, ..)| c.eq_ignore_ascii_case(code)).flat_map(|(_, shared, app)| [*shared, *app])
     }
 
     /// The CJK interface text the fonts must cover with the Chinese (`hans`) or other CJK fallback
