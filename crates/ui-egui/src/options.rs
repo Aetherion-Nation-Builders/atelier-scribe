@@ -837,7 +837,7 @@ fn display_server_picker(app: &mut WordApp, ui: &mut Ui) {
         });
         combo.response.labelled_by(label.id);
     });
-    note(ui, "Applies the next time WordCraft starts.");
+    note(ui, "Applies the next time Atelier Scribe starts.");
 }
 
 /// Interface language: follow the system (the default) or pick one (#8).

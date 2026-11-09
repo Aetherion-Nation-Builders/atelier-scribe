@@ -236,7 +236,7 @@ impl Remote {
                         && !is_read_only(method, params)
                     {
                         return Err(format!(
-                            "outcome unknown: the connection to the WordCraft app at {} failed while sending `{method}` or waiting for its reply ({e}); it may have been executed, so it is not sent again. Inspect the document to check",
+                            "outcome unknown: the connection to the Atelier Scribe app at {} failed while sending `{method}` or waiting for its reply ({e}); it may have been executed, so it is not sent again. Inspect the document to check",
                             self.addr
                         ));
                     }
