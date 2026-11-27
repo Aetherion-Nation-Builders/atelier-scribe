@@ -24,11 +24,11 @@ docs under `docs/`.
 |---|---|
 | The constants and the translation rewrite | `crates/ui-egui/src/identity.rs` (`PRODUCT`, `UPSTREAM`, `rewrite`, `retired`) |
 | Our own strings, with translations | `crates/ui-egui/src/i18n/brand.tsv` (added to each catalog as it loads; the upstream `.tsv` catalogs stay untouched) |
-| Where the rewrite runs | `crates/ui-egui/src/i18n/catalog.rs` (`parse_entries`, `with_plain`) and `i18n/mod.rs` |
+| Where the rewrite runs | `crates/ui-egui/src/i18n.rs` (`CATALOGS`, read by the app and by the craft framework's Host) |
 | Links | `crates/ui-egui/src/links.rs` |
-| English UI strings | literal `"Atelier Scribe"` in `crates/ui-egui/src` and `apps/` |
-| Nation button, mark, Help entries | `crates/ui-egui/src/{chrome,icons,ribbon,backstage,keytips}.rs` |
-| About | `crates/ui-egui/src/dialogs.rs` |
+| English UI strings | literal `"Atelier Scribe"` in `crates/ui-egui/src` and `apps/`; the framework's app name is `APP` in `crates/ui-egui/src/lib.rs` (`identity::PRODUCT`, id unchanged) |
+| Nation button, mark, Help entries | `crates/ui-egui/src/chrome/title_bar.rs`, `ribbon/review.rs`, `backstage.rs`, `keytips.rs`; the mark is `crates/ui-egui/icons/discord.svg` and `discordPill.svg` (ours, under their upstream file names) |
+| About | `crates/ui-egui/src/credits.rs` (`about_info`) |
 | MCP | `crates/mcp/src/{server,backend}.rs` |
 | Exports, sample | `crates/formats/src/latex.rs`, `crates/engine/src/sample.rs` |
 | Windows file properties | `apps/wordcraft/build.rs` |
